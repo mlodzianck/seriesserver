@@ -44,7 +44,7 @@ loop(Req) ->
 
 handle_generate_request(Req, "erlang.json", Proplist) ->
   {ok, Pid} = rnd_gen:start(),
-  Series = (catch rnd_gen:rnd_erlang(Pid, 2.0, 5, 10000000, json, 1000)),
+  Series = (catch rnd_gen:rnd_erlang(Pid, 2.0, 5, 20000, json, 1000)),
   send_http_response_and_terminate_process(Series,Req,Pid);
 
 
