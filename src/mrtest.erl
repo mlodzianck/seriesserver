@@ -15,6 +15,10 @@
 
 
 test() ->
+  StartWorkerProcessFun = fun() ->
+                              rnd_gen:start()
+                          end,
+
   MapArgsFun = fun(Args,WorkersCount) ->
                   [100000  || _ <- lists:seq(0,WorkersCount-1)]
                end,
@@ -31,6 +35,7 @@ test() ->
 
 
   InitOpts = #m_r_init_opts{
+    start_worker_process_fun = StartWorkerProcessFun,
     worker_module = rnd_gen,
     args = 'doesnt matter',
     worker_fun =  WorkerFun,

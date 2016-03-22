@@ -14,7 +14,13 @@
 
 -define(SERVER, ?MODULE).
 
--record(state, {opts,worker_pids=[]}).
+-record(state, {opts,worker_pids=[],
+  pids_valid_reply=[],
+  pids_invalid_reply=[],
+  active_worker_pids=[],
+  valid_replies=[],
+  invalid_replies=[],
+  requesting_pid}).
 -include("map_reduce.hrl").
 
 
@@ -43,9 +49,14 @@ go(Pid) ->
 %%    not is_atom(WorkerModule)->
 %%  {error , invalid_init_opts};
 
-init([#m_r_init_opts{worker_module = WorkerMod,workers_count = WorkerCount}=Opts]) ->
-  WorkerPids = [spawn_worker_module(WorkerMod) || _X <- lists:seq(0,WorkerCount-1)],
+init([#m_r_init_opts{worker_module = WorkerMod,workers_count = WorkerCount,start_worker_process_fun = StartWorkerProcFun}=Opts]) ->
   process_flag(trap_exit,true),
+  WorkerPids = [begin
+                  {ok,Pid} = StartWorkerProcFun(),
+                  Pid
+                end|| _X <- lists:seq(0,WorkerCount-1)],
+
+  [link(WorkerPid) || WorkerPid <- WorkerPids ],
   {ok, #state{opts = Opts,worker_pids = WorkerPids}}.
 
 
@@ -64,45 +75,35 @@ handle_cast({go,RequestingPid}, #state{
   io:format("Args prepared ~p~n",[WorkerArgsList]),
   Self=self(),
   WorkerFunWrapper  = fun(WorkerPid,WorkerArg) ->
-                          WorkerRet = (catch WorkerFun(WorkerPid,WorkerArg)),
+                          WorkerRet =(catch WorkerFun(WorkerPid,WorkerArg)),
+                          %WorkerRet =(WorkerFun(WorkerPid,WorkerArg)),
                           Self ! {worker_reply,WorkerPid,WorkerRet}
                       end,
   io:format("Spawning ~p workers~n",[WorkerCount]),
 
-  SpawnWorkerFun = fun(WorkerIndex) ->
-    io:format("Spawning worker ~p~n",[WorkerIndex]),
-    WorkerArg = lists:nth(WorkerIndex+1,WorkerArgsList),
-    WorkerPid = lists:nth(WorkerIndex+1,WorkerPids),
 
-    spawn(fun() -> WorkerFunWrapper(WorkerPid,WorkerArg) end),
-    io:format("Spawned worker ~p~n",[WorkerIndex])
-  end,
-  [SpawnWorkerFun(WorkerIndex)|| WorkerIndex <- lists:seq(0,WorkerCount-1)],
-
-%%  WorkersReturnList =[
-%%    receive
-%%      {worker_reply,WorkerPid,WorkerRet} ->
-%%        case ValidateWorkerResultFun(WorkerRet) of
-%%          true ->
-%%            io:format("Got valid worker result ~p, pid ~p~n",[WorkerRet,WorkerPid]),
-%%            WorkerRet;
-%%          _->
-%%            io:format("Got invalid worker result ~p, killing pid ~p~n",[WorkerRet,WorkerPid]),
-%%            erlang:exit(WorkerPid, kill),
-%%            {invalid,WorkerRet}
-%%        end
-%%    end || _ <- lists:seq(0,WorkerCount-1)
-%%  ],
-%%
-%%
-%%  RequestingPid ! {m_r_reply,WorkersReturnList},
-
-
-  {noreply,State}.
+  [begin
+     io:format("Spawning worker ~p~n",[WorkerIndex]),
+     WorkerArg = lists:nth(WorkerIndex+1,WorkerArgsList),
+     WorkerPid = lists:nth(WorkerIndex+1,WorkerPids),
+     spawn(fun() -> WorkerFunWrapper(WorkerPid,WorkerArg) end),
+     io:format("Spawned worker ~p~n",[WorkerIndex])
+   end || WorkerIndex <- lists:seq(0,WorkerCount-1)],
+  {noreply,State#state{active_worker_pids = WorkerPids,requesting_pid = RequestingPid}}.
 
 
 handle_call(_,_,_) ->
   {error,not_implemented}.
+
+handle_info({worker_reply,WorkerProcessPid,WorkerReply}, State = #state{active_worker_pids = ActivePids,
+                                                                        valid_replies = ValidReplies,
+                                                                        invalid_replies = InvalidReplies,
+                                                                        opts = #m_r_init_opts{validate_worker_result_fun = ResultValidateFun}}) ->
+  NewActivePids = lists:delete(WorkerProcessPid,ActivePids),
+  case ResultValidateFun(WorkerReply) of
+      true->
+  end;
+
 
 handle_info(Info, State) ->
   io:format("Got info ~p~n",[Info]),

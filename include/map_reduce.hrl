@@ -10,6 +10,7 @@
 
 
 -record(m_r_init_opts,{args,
+  start_worker_process_fun,
   map_args_fun,
   workers_count = 4,
   worker_module,
