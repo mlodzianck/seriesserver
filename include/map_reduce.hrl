@@ -11,11 +11,12 @@
 
 -record(m_r_init_opts,{args,
   start_worker_process_fun,
-  map_args_fun,
-  workers_count = 4,
-  worker_module,
   worker_fun,
-  validate_worker_result_fun,
+  worker_timeout = infinity,
+  map_args_fun,
   reduce_fun,
+  workers_count = 4,
+  validate_worker_result_fun,
   post_process_result_fun,
-  initial_result_value}).
+  fetch_result_fun,
+  terminate_worker_process_fun}).
