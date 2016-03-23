@@ -17,6 +17,5 @@
   reduce_fun,
   workers_count = 4,
   validate_worker_result_fun,
-  post_process_result_fun,
   fetch_result_fun,
   terminate_worker_process_fun}).
