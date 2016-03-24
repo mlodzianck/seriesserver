@@ -13,15 +13,16 @@
   code_change/3]).
 
 -define(SERVER, ?MODULE).
-
+-record(profiling_data,{started,workers_end,reduce_end}).
 -record(state, {opts,
   worker_pids=[],
   active_worker_pids=[],
   valid_replies=[],
   invalid_replies=[],
-  requesting_pid,
   timeout_timer = undefined,
-  reduce_pid}).
+  reduce_pid,
+  workers_timeout = false,
+  profiling_data}).
 -include("map_reduce.hrl").
 
 
@@ -29,8 +30,7 @@ start(#m_r_init_opts{}=InitOpts) ->
   gen_server:start(?MODULE, [InitOpts], []).
 
 go(Pid) ->
-  RequestorPid = self(),
-  gen_server:cast(Pid,{go,RequestorPid}).
+  gen_server:cast(Pid,{go}).
 
 stop(Pid) ->
   gen_server:call(Pid,stop).
@@ -46,12 +46,12 @@ init([#m_r_init_opts{workers_count = WorkerCount,start_worker_process_fun = Star
   {ok, #state{opts = Opts,worker_pids = WorkerPids}}.
 
 
-handle_cast({go,RequestingPid}, #state{
+handle_cast({go}, #state{
                           opts = #m_r_init_opts{map_args_fun = MapArgsFun,
                                                 args = Args,
                                                 worker_fun =  WorkerFun,
                                                 workers_count = WorkerCount,
-                                                worker_timeout = WorkerTimeout
+                                                timeout  = WorkerTimeout
                                                 },
                           worker_pids = WorkerPids
                       } = State
@@ -69,20 +69,27 @@ handle_cast({go,RequestingPid}, #state{
      spawn(fun() -> WorkerFunWrapper(WorkerPid,WorkerArg) end)
    end || WorkerIndex <- lists:seq(0,WorkerCount-1)],
   TimeoutTimerRef = schedule_timeout_signal(Self,WorkerTimeout),
-  {noreply,State#state{active_worker_pids = WorkerPids,requesting_pid = RequestingPid,timeout_timer = TimeoutTimerRef}};
+  ProfilingData = #profiling_data{started = erlang:system_time(milli_seconds)},
+  {noreply,State#state{active_worker_pids = WorkerPids,timeout_timer = TimeoutTimerRef,profiling_data = ProfilingData}};
 
-handle_cast({worker_reply,WorkerProcessPid,WorkerReply}, State = #state{active_worker_pids = [WorkerProcessPid],timeout_timer = undefined,
-                                                                        opts = #m_r_init_opts{fetch_result_fun = FetchFun}}) ->
+handle_cast({worker_reply,WorkerProcessPid,WorkerReply}, State = #state{active_worker_pids = [WorkerProcessPid],workers_timeout = true,
+                                                                        opts = #m_r_init_opts{fetch_result_fun = FetchFun,autoterminate = Autoterminate},
+                                                                        profiling_data = ProfilingData}) ->
 
   {NewValidReplies,NewInvalidReplies,NewActivePids} = handle_worker_reply(WorkerProcessPid,WorkerReply,State),
   error_logger:info_msg("Time is up, can't do reduce because timeout has expired"),
   spawn(fun() -> FetchFun({timeout,NewValidReplies}) end),
-  NewState =State#state{invalid_replies = NewInvalidReplies,valid_replies = NewValidReplies,active_worker_pids = NewActivePids},
-  {noreply,NewState};
+  NewState =State#state{invalid_replies = NewInvalidReplies,valid_replies = NewValidReplies,active_worker_pids = NewActivePids,
+    profiling_data = ProfilingData#profiling_data{workers_end = erlang:system_time(milli_seconds),reduce_end = erlang:system_time(milli_seconds)}},
+  case Autoterminate of
+    true -> {stop,normal,NewState};
+    _ -> {noreply,NewState}
+  end;
 
 
 handle_cast({worker_reply,WorkerProcessPid,WorkerReply}, State = #state{active_worker_pids = [WorkerProcessPid],
-                                                                        opts = #m_r_init_opts{reduce_fun  = ReduceFun}}) ->
+                                                                        opts = #m_r_init_opts{reduce_fun  = ReduceFun},
+                                                                        profiling_data = ProfilingData}) ->
   {NewValidReplies,NewInvalidReplies,NewActivePids} = handle_worker_reply(WorkerProcessPid,WorkerReply,State),
   Self = self(),
   ReduceWrapper = fun() ->
@@ -92,7 +99,8 @@ handle_cast({worker_reply,WorkerProcessPid,WorkerReply}, State = #state{active_w
   ReducePid = spawn(ReduceWrapper),
   link(ReducePid),
   error_logger:info_msg("Reduce spawned with pid ~p",[ReducePid]),
-  NewState =State#state{invalid_replies = NewInvalidReplies,valid_replies = NewValidReplies,active_worker_pids = NewActivePids,reduce_pid = ReducePid},
+  NewState =State#state{invalid_replies = NewInvalidReplies,valid_replies = NewValidReplies,active_worker_pids = NewActivePids,reduce_pid = ReducePid,
+    profiling_data = ProfilingData#profiling_data{workers_end = erlang:system_time(milli_seconds)}},
   {noreply,NewState};
 
 handle_cast({worker_reply,WorkerProcessPid,WorkerReply}, State) ->
@@ -101,14 +109,18 @@ handle_cast({worker_reply,WorkerProcessPid,WorkerReply}, State) ->
   {noreply, NewState};
 
 handle_cast({reduce_result,Result},State = #state{opts = #m_r_init_opts{
-                                                  fetch_result_fun = FetchFun},timeout_timer  = TimerRef}) ->
+                                                  fetch_result_fun = FetchFun,autoterminate = Autoterminate},timeout_timer  = TimerRef,profiling_data = ProfilingData}) ->
   error_logger:info_msg("Reduce result on time!"),
   case TimerRef of
     undefined -> ok;
     _ -> erlang:cancel_timer(TimerRef)
   end,
   spawn(fun() -> FetchFun(Result) end),
-  {noreply,State#state{timeout_timer = undefined}}.
+  case Autoterminate of
+    true -> {stop,normal,State#state{timeout_timer = undefined, profiling_data = ProfilingData#profiling_data{reduce_end = erlang:system_time(milli_seconds)}}};
+    _ -> {noreply,State#state{timeout_timer = undefined, profiling_data = ProfilingData#profiling_data{reduce_end = erlang:system_time(milli_seconds)}}}
+  end.
+
 
 handle_call(stop,_,State) ->
   {stop,normal,ok,State}.
@@ -124,14 +136,17 @@ handle_info({'EXIT',Pid,_},State = #state{worker_pids = WorkerPids}) ->
 
 
 
-handle_info(timeout, State=#state{active_worker_pids = [],opts = #m_r_init_opts{fetch_result_fun = FetchFun},valid_replies = V,reduce_pid = ReducePid}) when is_pid(ReducePid) ->
-  error_logger:info_msg("Reduce timeout!"),
+handle_info(timeout, State=#state{active_worker_pids = [],opts = #m_r_init_opts{fetch_result_fun = FetchFun,autoterminate = Autoterminate},valid_replies = V,reduce_pid = ReducePid,
+                                  profiling_data = ProfilingData}) when is_pid(ReducePid) ->
   spawn(fun() -> FetchFun({reduce_timeout,V}) end),
   erlang:exit(ReducePid,kill),
-  {noreply, State#state{timeout_timer  = undefined,reduce_pid = undefined}};
+  case Autoterminate of
+    true -> {stop,normal, State#state{workers_timeout = true,timeout_timer  = undefined,reduce_pid = undefined,profiling_data = ProfilingData#profiling_data{reduce_end = erlang:system_time(milli_seconds)}}};
+    _ -> {noreply, State#state{workers_timeout = true,timeout_timer  = undefined,reduce_pid = undefined,profiling_data = ProfilingData#profiling_data{reduce_end = erlang:system_time(milli_seconds)}}}
+  end;
+
 
 handle_info(timeout, State=#state{active_worker_pids = []}) ->
-  error_logger:info_msg("Got worker timeout but no worker is active right now"),
   {noreply, State};
 
 handle_info(timeout, State=#state{active_worker_pids = WorkerPids}) ->
@@ -145,16 +160,18 @@ handle_info(timeout, State=#state{active_worker_pids = WorkerPids}) ->
     end
      || WorkerProcessPid <- WorkerPids
   ],
-  {noreply, State#state{timeout_timer = undefined}};
+  {noreply, State#state{workers_timeout = true,timeout_timer = undefined}};
 
 handle_info(Info, State) ->
   error_logger:info_msg("Got info ~p~n",[Info]),
   {noreply, State}.
 
 
-terminate(_Reason, #state{worker_pids = WorkerPids,valid_replies = V, invalid_replies = IV}) ->
+terminate(_Reason, #state{worker_pids = WorkerPids,valid_replies = V, invalid_replies = IV,profiling_data = #profiling_data{workers_end = WEnd,reduce_end = REnd,started = Start}}) ->
   error_logger:info_msg("Exiting due to  ~p with worker pids ~p ~n",[_Reason,WorkerPids]),
   error_logger:info_msg("Valid responses count ~p invalid ~p",[length(V),length(IV)]),
+  error_logger:info_msg("Profile info: started ~p, workers end (delta) + ~p, reduce  (delta) + ~p ",[Start,WEnd-Start,REnd-WEnd]),
+
   ok.
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.

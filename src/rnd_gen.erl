@@ -64,20 +64,20 @@ init([]) ->
 handle_call({rnd_exponential,{alpha,Alpha},_,_}, _From, State) when  not is_float(Alpha); Alpha<0 ->
   {reply, {error,parameter_invalid}, State};
 handle_call({rnd_exponential,[{alpha,Alpha}],Format,SeriesLen}, _From, State) ->
-  R = [-((math:log(1-rand:uniform()))/Alpha) || _X <- lists:seq(0,SeriesLen)],
+  R = [-((math:log(1-rand:uniform()))/Alpha) || _X <- lists:seq(0,SeriesLen-1)],
   {reply, format_convert(R,Format), State};
 
 
 handle_call({rnd_erlang,[{b,B},{c,C}],_,_}, _From, State) when not is_integer(C) ; C<1; not is_float(B); B<0->
   {reply, {error,parameter_invalid}, State};
 handle_call({rnd_erlang,[{b,B},{c,C}],Format,SeriesLen}, _From, State) ->
-  R  = [generate_erlang_radnom_number(B,C) || _X <- lists:seq(0,SeriesLen)],
+  R  = [generate_erlang_radnom_number(B,C) || _X <- lists:seq(0,SeriesLen-1)],
   {reply, format_convert(R,Format), State};
 
 handle_call({rnd_uniform,[{min,Min},{max,Max}],_,_}, _From, State) when not is_float(Min); not is_float(Max);Max=<Min ->
   {reply, {error,parameter_invalid}, State};
 handle_call({rnd_uniform,[{min,Min},{max,Max}],Format,SeriesLen}, _From, State) ->
-  R  = [random:uniform()*(Max-Min) + Min || _X <- lists:seq(0,SeriesLen)],
+  R  = [random:uniform()*(Max-Min) + Min || _X <- lists:seq(0,SeriesLen-1)],
   {reply, format_convert(R,Format), State};
 
 handle_call(stop, _From, State) ->

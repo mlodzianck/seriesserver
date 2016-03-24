@@ -12,10 +12,11 @@
 -record(m_r_init_opts,{args,
   start_worker_process_fun,
   worker_fun,
-  worker_timeout = infinity,
+  timeout = infinity,
   map_args_fun,
   reduce_fun,
   workers_count = 4,
   validate_worker_result_fun,
   fetch_result_fun,
-  terminate_worker_process_fun}).
+  terminate_worker_process_fun,
+  autoterminate=false}).

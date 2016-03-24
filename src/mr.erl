@@ -20,7 +20,7 @@ t() ->
                           end,
 
   MapArgsFun = fun(_Args,WorkersCount) ->
-                  [50000  || _ <- lists:seq(0,WorkersCount-1)]
+                  [10000  || _ <- lists:seq(0,WorkersCount-1)]
                end,
   WorkerFun = fun(WorkerPid,WorkerArg) ->
                 rnd_gen:rnd_erlang(WorkerPid, 2.0, 5,WorkerArg,atom)
@@ -54,7 +54,8 @@ t() ->
     reduce_fun = PostprocessFun,
     fetch_result_fun = FetchResultFun,
     terminate_worker_process_fun = TerminateProcessFun,
-    worker_timeout = 4000
+    timeout  = 1000,
+    autoterminate = true
 
   },
 
@@ -63,7 +64,7 @@ t() ->
   receive
     {_,{reduce_timeout,_}} ->error_logger:info_msg("========================>Reduce timeout!!!");
     {_,{timeout,_}} ->error_logger:info_msg("========================>Worker timeout!!!");
-    {_,Any} when is_list(Any)-> error_logger:info_msg("========================>Got from MR with len ~n",[]);
+    {_,Any} when is_list(Any)-> error_logger:info_msg("========================>Got from MR~n~n",[]);
     _ -> error_logger:info_msg("========================>Got other reply from MR")
-  end,
-  map_reduce:stop(MRPid).
+  end.
+ % map_reduce:stop(MRPid).
